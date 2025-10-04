@@ -4,13 +4,14 @@ FastAPI Relay Controller for 4-Port Relay Board
 Based on the relay control logic from script1.py
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 import RPi.GPIO as GPIO
 import time
 import asyncio
 import logging
+import json
 from contextlib import asynccontextmanager
 
 # Configure logging
@@ -28,7 +29,40 @@ RELAY_NAMES = {
 
 # Global state tracking
 relay_states = {i: False for i in range(1, 5)}  # False = OFF (HIGH), True = ON (LOW)
+emergency_stop = False
 gpio_initialized = False
+
+# WebSocket connection manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Set[WebSocket] = set()
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.add(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.discard(websocket)
+
+    async def send_personal_message(self, message: str, websocket: WebSocket):
+        try:
+            await websocket.send_text(message)
+        except:
+            self.disconnect(websocket)
+
+    async def broadcast(self, message: str):
+        disconnected = set()
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except:
+                disconnected.add(connection)
+        
+        # Remove disconnected connections
+        for connection in disconnected:
+            self.disconnect(connection)
+
+manager = ConnectionManager()
 
 class RelayState(BaseModel):
     relay_id: int = Field(..., ge=1, le=4, description="Relay ID (1-4)")
@@ -97,6 +131,22 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+async def broadcast_status():
+    """Broadcast current relay status to all WebSocket connections"""
+    status_data = {
+        "timestamp": time.time(),
+        "relays": {
+            str(relay_id): {
+                "state": "on" if state else "off",
+                "pin": RELAY_NAMES[relay_id]["pin"]
+            }
+            for relay_id, state in relay_states.items()
+        },
+        "emergency_stop": emergency_stop,
+        "gpio_initialized": gpio_initialized
+    }
+    await manager.broadcast(json.dumps(status_data))
+
 def set_relay_state(relay_id: int, state: bool) -> bool:
     """Set individual relay state"""
     if not gpio_initialized:
@@ -113,6 +163,10 @@ def set_relay_state(relay_id: int, state: bool) -> bool:
         relay_states[relay_id] = state
         
         logger.info(f"Relay {relay_id} set to {'ON' if state else 'OFF'}")
+        
+        # Broadcast status change to WebSocket clients
+        asyncio.create_task(broadcast_status())
+        
         return True
         
     except Exception as e:
@@ -121,29 +175,35 @@ def set_relay_state(relay_id: int, state: bool) -> bool:
 
 @app.get("/")
 async def root():
-    """Root endpoint with API information"""
+    """API Information"""
     return {
         "name": "4-Port Relay Controller API",
         "version": "1.0.0",
-        "description": "REST API for controlling a 4-port relay board on Raspberry Pi",
+        "description": "FastAPI-based relay controller for 4-port relay board",
         "endpoints": {
-            "GET /status": "Get all relay states",
-            "POST /relay/on": "Turn relay ON",
-            "POST /relay/off": "Turn relay OFF", 
-            "POST /relay/toggle": "Toggle relay state",
-            "POST /relay/pulse": "Pulse relay for duration",
-            "POST /sequence": "Run relay sequence",
-            "POST /all/on": "Turn all relays ON",
-            "POST /all/off": "Turn all relays OFF",
-            "POST /emergency/stop": "Emergency stop - turn all relays OFF"
+            "status": "GET /status - Get current relay status",
+            "status_ws": "WS /status/ws - Real-time relay status via WebSocket",
+            "relay_on": "POST /relay/on - Turn relay on",
+            "relay_off": "POST /relay/off - Turn relay off", 
+            "relay_toggle": "POST /relay/toggle - Toggle relay state",
+            "all_on": "POST /relay/all/on - Turn all relays on",
+            "all_off": "POST /relay/all/off - Turn all relays off",
+            "pulse": "POST /relay/pulse - Pulse relay",
+            "sequence": "POST /relay/sequence - Run relay sequence",
+            "emergency_stop": "POST /emergency/stop - Emergency stop all relays"
         },
-        "documentation": "/docs"
+        "websocket_usage": {
+            "url": "ws://localhost:8002/status/ws",
+            "description": "Connect to receive real-time relay status updates",
+            "message_format": "JSON with timestamp, relays, emergency_stop, and gpio_initialized fields"
+        }
     }
 
 @app.get("/status")
 async def get_status() -> Dict:
     """Get current status of all relays"""
     return {
+        "timestamp": time.time(),
         "relays": {
             str(relay_id): {
                 "name": RELAY_NAMES[relay_id]["name"],
@@ -153,8 +213,38 @@ async def get_status() -> Dict:
             }
             for relay_id in RELAY_NAMES.keys()
         },
+        "emergency_stop": emergency_stop,
         "gpio_initialized": gpio_initialized
     }
+
+@app.websocket("/status/ws")
+async def websocket_status(websocket: WebSocket):
+    """WebSocket endpoint for real-time relay status updates"""
+    await manager.connect(websocket)
+    
+    # Send initial status
+    initial_status = {
+        "timestamp": time.time(),
+        "relays": {
+            str(relay_id): {
+                "state": "on" if state else "off",
+                "pin": RELAY_NAMES[relay_id]["pin"]
+            }
+            for relay_id, state in relay_states.items()
+        },
+        "emergency_stop": emergency_stop,
+        "gpio_initialized": gpio_initialized
+    }
+    await manager.send_personal_message(json.dumps(initial_status), websocket)
+    
+    try:
+        while True:
+            # Keep connection alive and handle any incoming messages
+            data = await websocket.receive_text()
+            # Echo back any received messages (optional)
+            await manager.send_personal_message(f"Echo: {data}", websocket)
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 @app.post("/relay/on")
 async def turn_relay_on(relay: RelayControl):
