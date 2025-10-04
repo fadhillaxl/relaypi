@@ -5,6 +5,7 @@ Based on the relay control logic from script1.py
 """
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Set
 import RPi.GPIO as GPIO
@@ -131,6 +132,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
 async def broadcast_status():
     """Broadcast current relay status to all WebSocket connections"""
     status_data = {
@@ -180,6 +190,13 @@ async def root():
         "name": "4-Port Relay Controller API",
         "version": "1.0.0",
         "description": "FastAPI-based relay controller for 4-port relay board",
+        "features": [
+            "RESTful API for relay control",
+            "Real-time WebSocket status updates",
+            "CORS enabled for cross-origin requests",
+            "Emergency stop functionality",
+            "Relay sequencing and pulsing"
+        ],
         "endpoints": {
             "status": "GET /status - Get current relay status",
             "status_ws": "WS /status/ws - Real-time relay status via WebSocket",
@@ -196,6 +213,11 @@ async def root():
             "url": "ws://localhost:8002/status/ws",
             "description": "Connect to receive real-time relay status updates",
             "message_format": "JSON with timestamp, relays, emergency_stop, and gpio_initialized fields"
+        },
+        "cors": {
+            "enabled": True,
+            "description": "Cross-Origin Resource Sharing enabled for all origins",
+            "note": "Web applications can access this API from any domain"
         }
     }
 
