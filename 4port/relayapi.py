@@ -143,26 +143,21 @@ app.add_middleware(
 
 async def broadcast_status():
     """Broadcast current relay status to all WebSocket connections"""
-    try:
-        # Build relays data step by step to avoid JSON serialization issues
-        relays_data = {}
-        for relay_id in RELAY_NAMES.keys():
-            relays_data[str(relay_id)] = {
+    status_data = {
+        "timestamp": time.time(),
+        "relays": {
+            str(relay_id): {
                 "name": RELAY_NAMES[relay_id]["name"],
                 "pin": RELAY_NAMES[relay_id]["pin"],
                 "state": relay_states[relay_id],
                 "status": "ON" if relay_states[relay_id] else "OFF"
             }
-        
-        status_data = {
-            "timestamp": time.time(),
-            "relays": relays_data,
-            "emergency_stop": emergency_stop,
-            "gpio_initialized": gpio_initialized
-        }
-        await manager.broadcast(json.dumps(status_data))
-    except Exception as e:
-        logger.error(f"Error in broadcast_status: {e}")
+            for relay_id in RELAY_NAMES.keys()
+        },
+        "emergency_stop": emergency_stop,
+        "gpio_initialized": gpio_initialized
+    }
+    await manager.broadcast(json.dumps(status_data))
 
 def set_relay_state(relay_id: int, state: bool) -> bool:
     """Set individual relay state"""
@@ -248,36 +243,25 @@ async def get_status() -> Dict:
 
 @app.websocket("/status/ws")
 async def websocket_status(websocket: WebSocket):
+    """WebSocket endpoint for real-time relay status updates"""
     await manager.connect(websocket)
     
     # Send initial status
-    try:
-        # Debug: Let's build this step by step to identify the issue
-        relays_data = {}
-        for relay_id in RELAY_NAMES.keys():
-            logger.info(f"Processing relay_id: {relay_id}, type: {type(relay_id)}")
-            logger.info(f"RELAY_NAMES[{relay_id}]: {RELAY_NAMES[relay_id]}")
-            logger.info(f"relay_states[{relay_id}]: {relay_states[relay_id]}")
-            
-            relays_data[str(relay_id)] = {
+    initial_status = {
+        "timestamp": time.time(),
+        "relays": {
+            str(relay_id): {
                 "name": RELAY_NAMES[relay_id]["name"],
                 "pin": RELAY_NAMES[relay_id]["pin"],
                 "state": relay_states[relay_id],
                 "status": "ON" if relay_states[relay_id] else "OFF"
             }
-        
-        initial_status = {
-            "timestamp": time.time(),
-            "relays": relays_data,
-            "emergency_stop": emergency_stop,
-            "gpio_initialized": gpio_initialized
-        }
-        
-        logger.info(f"Initial status structure: {initial_status}")
-        await manager.send_personal_message(json.dumps(initial_status), websocket)
-    except Exception as e:
-        logger.error(f"Error in WebSocket initial status: {e}")
-        await manager.send_personal_message(json.dumps({"error": str(e)}), websocket)
+            for relay_id in RELAY_NAMES.keys()
+        },
+        "emergency_stop": emergency_stop,
+        "gpio_initialized": gpio_initialized
+    }
+    await manager.send_personal_message(json.dumps(initial_status), websocket)
     
     try:
         while True:
@@ -418,7 +402,7 @@ async def turn_all_off():
     }
 
 @app.post("/emergency/stop")
-async def emergency_stop():
+async def emergency_stop_all():
     """Emergency stop - turn all relays OFF immediately"""
     try:
         for relay_id in RELAY_NAMES.keys():
