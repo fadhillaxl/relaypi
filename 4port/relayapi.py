@@ -213,7 +213,12 @@ async def root():
         },
         "websocket_usage": {
             "url": "ws://localhost:8002/status/ws",
-            "description": "Connect to receive real-time relay status updates",
+            "description": "Connect to receive real-time relay status updates every 2 seconds",
+            "features": [
+                "Automatic status updates every 2 seconds",
+                "Immediate updates when relay state changes",
+                "Supports client messages: 'get_status', 'ping'"
+            ],
             "message_format": "JSON with timestamp, relays, emergency_stop, and gpio_initialized fields"
         },
         "cors": {
@@ -247,29 +252,66 @@ async def websocket_status(websocket: WebSocket):
     await manager.connect(websocket)
     
     # Send initial status
-    initial_status = {
-        "timestamp": time.time(),
-        "relays": {
-            str(relay_id): {
-                "name": RELAY_NAMES[relay_id]["name"],
-                "pin": RELAY_NAMES[relay_id]["pin"],
-                "state": relay_states[relay_id],
-                "status": "ON" if relay_states[relay_id] else "OFF"
-            }
-            for relay_id in RELAY_NAMES.keys()
-        },
-        "emergency_stop": emergency_stop,
-        "gpio_initialized": gpio_initialized
-    }
-    await manager.send_personal_message(json.dumps(initial_status), websocket)
+    async def send_status():
+        status_data = {
+            "timestamp": time.time(),
+            "relays": {
+                str(relay_id): {
+                    "name": RELAY_NAMES[relay_id]["name"],
+                    "pin": RELAY_NAMES[relay_id]["pin"],
+                    "state": relay_states[relay_id],
+                    "status": "ON" if relay_states[relay_id] else "OFF"
+                }
+                for relay_id in RELAY_NAMES.keys()
+            },
+            "emergency_stop": emergency_stop,
+            "gpio_initialized": gpio_initialized
+        }
+        await manager.send_personal_message(json.dumps(status_data), websocket)
+    
+    # Send initial status
+    await send_status()
     
     try:
+        # Create background task for periodic status updates
+        async def periodic_status_sender():
+            while True:
+                await asyncio.sleep(2)  # Send status every 2 seconds
+                try:
+                    await send_status()
+                except Exception as e:
+                    logger.error(f"Error sending periodic status: {e}")
+                    break
+        
+        # Start periodic status updates
+        periodic_task = asyncio.create_task(periodic_status_sender())
+        
+        # Handle incoming messages
         while True:
-            # Keep connection alive and handle any incoming messages
-            data = await websocket.receive_text()
-            # Echo back any received messages (optional)
-            await manager.send_personal_message(f"Echo: {data}", websocket)
+            try:
+                # Wait for incoming messages with timeout
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+                
+                # Handle different message types
+                if data == "get_status":
+                    await send_status()
+                elif data == "ping":
+                    await manager.send_personal_message("pong", websocket)
+                else:
+                    await manager.send_personal_message(f"Echo: {data}", websocket)
+                    
+            except asyncio.TimeoutError:
+                # Timeout is normal, continue the loop
+                continue
+            except WebSocketDisconnect:
+                break
+                
     except WebSocketDisconnect:
+        pass
+    finally:
+        # Clean up
+        if 'periodic_task' in locals():
+            periodic_task.cancel()
         manager.disconnect(websocket)
 
 @app.post("/relay/on")
