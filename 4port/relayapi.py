@@ -141,8 +141,32 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
+def sync_gpio_states():
+    """Read actual GPIO pin states and sync with internal state"""
+    if not gpio_initialized:
+        return
+    
+    try:
+        for relay_id, relay_info in RELAY_NAMES.items():
+            pin = relay_info["pin"]
+            # Read actual GPIO pin state
+            gpio_state = GPIO.input(pin)
+            # Convert GPIO state to relay state (LOW = ON, HIGH = OFF)
+            actual_state = gpio_state == GPIO.LOW
+            
+            # Update internal state if different
+            if relay_states[relay_id] != actual_state:
+                relay_states[relay_id] = actual_state
+                logger.info(f"Synced Relay {relay_id}: GPIO pin {pin} is {'LOW (ON)' if actual_state else 'HIGH (OFF)'}")
+                
+    except Exception as e:
+        logger.error(f"Error syncing GPIO states: {e}")
+
 async def broadcast_status():
     """Broadcast current relay status to all WebSocket connections"""
+    # Sync with actual GPIO states before broadcasting
+    sync_gpio_states()
+    
     status_data = {
         "timestamp": time.time(),
         "relays": {
@@ -201,6 +225,7 @@ async def root():
         ],
         "endpoints": {
             "status": "GET /status - Get current relay status",
+            "sync": "POST /sync - Sync internal state with actual GPIO pin states",
             "status_ws": "WS /status/ws - Real-time relay status via WebSocket",
             "relay_on": "POST /relay/on - Turn relay on",
             "relay_off": "POST /relay/off - Turn relay off", 
@@ -231,6 +256,9 @@ async def root():
 @app.get("/status")
 async def get_status() -> Dict:
     """Get current status of all relays"""
+    # Sync with actual GPIO states before returning status
+    sync_gpio_states()
+    
     return {
         "timestamp": time.time(),
         "relays": {
@@ -245,6 +273,50 @@ async def get_status() -> Dict:
         "emergency_stop": emergency_stop,
         "gpio_initialized": gpio_initialized
     }
+
+@app.post("/sync")
+async def sync_states():
+    """Manually sync internal relay states with actual GPIO pin states"""
+    if not gpio_initialized:
+        raise HTTPException(status_code=500, detail="GPIO not initialized")
+    
+    changes = []
+    try:
+        for relay_id, relay_info in RELAY_NAMES.items():
+            pin = relay_info["pin"]
+            old_state = relay_states[relay_id]
+            
+            # Read actual GPIO pin state
+            gpio_state = GPIO.input(pin)
+            # Convert GPIO state to relay state (LOW = ON, HIGH = OFF)
+            actual_state = gpio_state == GPIO.LOW
+            
+            # Update internal state if different
+            if old_state != actual_state:
+                relay_states[relay_id] = actual_state
+                changes.append({
+                    "relay_id": relay_id,
+                    "pin": pin,
+                    "old_state": old_state,
+                    "new_state": actual_state,
+                    "gpio_level": "LOW" if gpio_state == GPIO.LOW else "HIGH"
+                })
+                logger.info(f"Synced Relay {relay_id}: GPIO pin {pin} is {'LOW (ON)' if actual_state else 'HIGH (OFF)'}")
+        
+        # Broadcast updated status if there were changes
+        if changes:
+            asyncio.create_task(broadcast_status())
+        
+        return {
+            "message": "GPIO states synchronized",
+            "timestamp": time.time(),
+            "changes": changes,
+            "total_changes": len(changes)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error syncing GPIO states: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to sync GPIO states: {e}")
 
 @app.websocket("/status/ws")
 async def websocket_status(websocket: WebSocket):
