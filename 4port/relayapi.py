@@ -144,8 +144,9 @@ app.add_middleware(
 def sync_gpio_states():
     """Read actual GPIO pin states and sync with internal state"""
     if not gpio_initialized:
-        return
+        return False
     
+    changes_detected = False
     try:
         for relay_id, relay_info in RELAY_NAMES.items():
             pin = relay_info["pin"]
@@ -157,10 +158,13 @@ def sync_gpio_states():
             # Update internal state if different
             if relay_states[relay_id] != actual_state:
                 relay_states[relay_id] = actual_state
+                changes_detected = True
                 logger.info(f"Synced Relay {relay_id}: GPIO pin {pin} is {'LOW (ON)' if actual_state else 'HIGH (OFF)'}")
                 
     except Exception as e:
         logger.error(f"Error syncing GPIO states: {e}")
+        
+    return changes_detected
 
 async def broadcast_status():
     """Broadcast current relay status to all WebSocket connections"""
@@ -238,10 +242,12 @@ async def root():
         },
         "websocket_usage": {
             "url": "ws://localhost:8002/status/ws",
-            "description": "Connect to receive real-time relay status updates every 2 seconds",
+            "description": "Connect to receive real-time relay status updates every 100ms",
             "features": [
-                "Automatic status updates every 2 seconds",
-                "Immediate updates when relay state changes",
+                "Real-time status updates every 100ms (10 times per second)",
+                "Automatic GPIO state synchronization with hardware",
+                "Detects external changes via raspi-gpio commands",
+                "Immediate updates when relay state changes via API",
                 "Supports client messages: 'get_status', 'ping'"
             ],
             "message_format": "JSON with timestamp, relays, emergency_stop, and gpio_initialized fields"
@@ -323,34 +329,39 @@ async def websocket_status(websocket: WebSocket):
     """WebSocket endpoint for real-time relay status updates"""
     await manager.connect(websocket)
     
-    # Send initial status
-    async def send_status():
-        status_data = {
-            "timestamp": time.time(),
-            "relays": {
-                str(relay_id): {
-                    "name": RELAY_NAMES[relay_id]["name"],
-                    "pin": RELAY_NAMES[relay_id]["pin"],
-                    "state": relay_states[relay_id],
-                    "status": "ON" if relay_states[relay_id] else "OFF"
-                }
-                for relay_id in RELAY_NAMES.keys()
-            },
-            "emergency_stop": emergency_stop,
-            "gpio_initialized": gpio_initialized
-        }
-        await manager.send_personal_message(json.dumps(status_data), websocket)
+    # Send initial status with GPIO sync
+    async def send_status(force_send=False):
+        # Sync GPIO states before sending to ensure real-time accuracy
+        changes_detected = sync_gpio_states()
+        
+        # Only send if changes detected or forced
+        if force_send or changes_detected:
+            status_data = {
+                "timestamp": time.time(),
+                "relays": {
+                    str(relay_id): {
+                        "name": RELAY_NAMES[relay_id]["name"],
+                        "pin": RELAY_NAMES[relay_id]["pin"],
+                        "state": relay_states[relay_id],
+                        "status": "ON" if relay_states[relay_id] else "OFF"
+                    }
+                    for relay_id in RELAY_NAMES.keys()
+                },
+                "emergency_stop": emergency_stop,
+                "gpio_initialized": gpio_initialized
+            }
+            await manager.send_personal_message(json.dumps(status_data), websocket)
     
     # Send initial status
-    await send_status()
+    await send_status(force_send=True)
     
     try:
-        # Create background task for periodic status updates
+        # Create background task for real-time status updates
         async def periodic_status_sender():
             while True:
-                await asyncio.sleep(2)  # Send status every 2 seconds
+                await asyncio.sleep(0.1)  # Check for changes every 100ms for real-time updates
                 try:
-                    await send_status()
+                    await send_status()  # Only sends if changes detected
                 except Exception as e:
                     logger.error(f"Error sending periodic status: {e}")
                     break
@@ -366,7 +377,7 @@ async def websocket_status(websocket: WebSocket):
                 
                 # Handle different message types
                 if data == "get_status":
-                    await send_status()
+                    await send_status(force_send=True)
                 elif data == "ping":
                     await manager.send_personal_message("pong", websocket)
                 else:
