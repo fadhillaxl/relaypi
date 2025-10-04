@@ -147,10 +147,12 @@ async def broadcast_status():
         "timestamp": time.time(),
         "relays": {
             str(relay_id): {
-                "state": "on" if state else "off",
-                "pin": RELAY_NAMES[relay_id]["pin"]
+                "name": RELAY_NAMES[relay_id]["name"],
+                "pin": RELAY_NAMES[relay_id]["pin"],
+                "state": relay_states[relay_id],
+                "status": "ON" if relay_states[relay_id] else "OFF"
             }
-            for relay_id, state in relay_states.items()
+            for relay_id in RELAY_NAMES.keys()
         },
         "emergency_stop": emergency_stop,
         "gpio_initialized": gpio_initialized
@@ -249,10 +251,12 @@ async def websocket_status(websocket: WebSocket):
         "timestamp": time.time(),
         "relays": {
             str(relay_id): {
-                "state": "on" if state else "off",
-                "pin": RELAY_NAMES[relay_id]["pin"]
+                "name": RELAY_NAMES[relay_id]["name"],
+                "pin": RELAY_NAMES[relay_id]["pin"],
+                "state": relay_states[relay_id],
+                "status": "ON" if relay_states[relay_id] else "OFF"
             }
-            for relay_id, state in relay_states.items()
+            for relay_id in RELAY_NAMES.keys()
         },
         "emergency_stop": emergency_stop,
         "gpio_initialized": gpio_initialized
