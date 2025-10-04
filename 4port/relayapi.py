@@ -183,27 +183,33 @@ async def turn_relay_on(relay: RelayControl):
         "state": True
     }
 
+class RelayOff(BaseModel):
+    relay_id: int = Field(..., ge=1, le=4, description="Relay ID (1-4)")
+
 @app.post("/relay/off")
-async def turn_relay_off(relay_id: int = Field(..., ge=1, le=4)):
+async def turn_relay_off(relay: RelayOff):
     """Turn a specific relay OFF"""
-    set_relay_state(relay_id, False)
+    set_relay_state(relay.relay_id, False)
     
     return {
-        "message": f"Relay {relay_id} turned OFF",
-        "relay_id": relay_id,
+        "message": f"Relay {relay.relay_id} turned OFF",
+        "relay_id": relay.relay_id,
         "state": False
     }
 
+class RelayToggle(BaseModel):
+    relay_id: int = Field(..., ge=1, le=4, description="Relay ID (1-4)")
+
 @app.post("/relay/toggle")
-async def toggle_relay(relay_id: int = Field(..., ge=1, le=4)):
+async def toggle_relay(relay: RelayToggle):
     """Toggle a specific relay state"""
-    current_state = relay_states[relay_id]
+    current_state = relay_states[relay.relay_id]
     new_state = not current_state
-    set_relay_state(relay_id, new_state)
+    set_relay_state(relay.relay_id, new_state)
     
     return {
-        "message": f"Relay {relay_id} toggled to {'ON' if new_state else 'OFF'}",
-        "relay_id": relay_id,
+        "message": f"Relay {relay.relay_id} toggled to {'ON' if new_state else 'OFF'}",
+        "relay_id": relay.relay_id,
         "previous_state": current_state,
         "new_state": new_state
     }
